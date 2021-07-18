@@ -824,7 +824,7 @@ class LinkInterceptor {
         if (this.delegate.shouldInterceptLinkClick(event.target, event.detail.url)) {
           this.clickEvent.preventDefault();
           event.preventDefault();
-          this.delegate.linkClickIntercepted(event.target, event.detail.url);
+          this.convertLinkWithMethodClickToFormSubmission(event.target) || this.delegate.linkClickIntercepted(event.target, event.detail.url);
         }
       }
       delete this.clickEvent;
@@ -844,6 +844,21 @@ class LinkInterceptor {
     this.element.removeEventListener("click", this.clickBubbled);
     document.removeEventListener("turbo:click", this.linkClicked);
     document.removeEventListener("turbo:before-visit", this.willVisit);
+  }
+  convertLinkWithMethodClickToFormSubmission(link) {
+    var _a;
+    const linkMethod = link.getAttribute("data-turbo-method") || link.getAttribute("data-method");
+    if (linkMethod) {
+      const form = document.createElement("form");
+      form.method = linkMethod;
+      form.action = link.getAttribute("href") || "undefined";
+      (_a = link.parentNode) === null || _a === void 0 ? void 0 : _a.insertBefore(form, link);
+      return dispatch("submit", {
+        target: form
+      });
+    } else {
+      return false;
+    }
   }
   respondsToEventTarget(target) {
     const element = target instanceof Element ? target : target instanceof Node ? target.parentElement : null;
@@ -928,6 +943,9 @@ class Renderer {
       return element;
     } else {
       const createdScriptElement = document.createElement("script");
+      if (this.cspNonce) {
+        createdScriptElement.nonce = this.cspNonce;
+      }
       createdScriptElement.textContent = element.textContent;
       createdScriptElement.async = false;
       copyElementAttributes(createdScriptElement, element);
@@ -955,6 +973,10 @@ class Renderer {
   get permanentElementMap() {
     return this.currentSnapshot.getPermanentElementMapForSnapshot(this.newSnapshot);
   }
+  get cspNonce() {
+    var _a;
+    return (_a = document.head.querySelector('meta[name="csp-nonce"]')) === null || _a === void 0 ? void 0 : _a.getAttribute("content");
+  }
 }
 
 function copyElementAttributes(destinationElement, sourceElement) {
@@ -979,6 +1001,8 @@ class FrameRenderer extends Renderer {
     this.scrollFrameIntoView();
     await nextAnimationFrame();
     this.focusFirstAutofocusableElement();
+    await nextAnimationFrame();
+    this.activateScriptElements();
   }
   loadFrameElement() {
     var _a;
@@ -1004,6 +1028,15 @@ class FrameRenderer extends Renderer {
       }
     }
     return false;
+  }
+  activateScriptElements() {
+    for (const inertScriptElement of this.newScriptElements) {
+      const activatedScriptElement = this.createScriptElement(inertScriptElement);
+      inertScriptElement.replaceWith(activatedScriptElement);
+    }
+  }
+  get newScriptElements() {
+    return this.currentElement.querySelectorAll("script");
   }
 }
 
@@ -1484,7 +1517,7 @@ class Visit {
     }
   }
   scrollToAnchor() {
-    if (getAnchor(this.location) != null) {
+    if (getAnchor(this.location)) {
       this.view.scrollToAnchor(getAnchor(this.location));
       return true;
     }
@@ -1609,6 +1642,30 @@ class BrowserAdapter {
   }
   get navigator() {
     return this.session.navigator;
+  }
+}
+
+class CacheObserver {
+  constructor() {
+    this.started = false;
+  }
+  start() {
+    if (!this.started) {
+      this.started = true;
+      addEventListener("turbo:before-cache", this.removeStaleElements, false);
+    }
+  }
+  stop() {
+    if (this.started) {
+      this.started = false;
+      removeEventListener("turbo:before-cache", this.removeStaleElements, false);
+    }
+  }
+  removeStaleElements() {
+    const staleElements = [ ...document.querySelectorAll('[data-turbo-cache="false"]') ];
+    for (const element of staleElements) {
+      element.remove();
+    }
   }
 }
 
@@ -2201,7 +2258,7 @@ class PageRenderer extends Renderer {
     return this.newHeadSnapshot.provisionalElements;
   }
   get newBodyScriptElements() {
-    return [ ...this.newElement.querySelectorAll("script") ];
+    return this.newElement.querySelectorAll("script");
   }
 }
 
@@ -2292,6 +2349,7 @@ class Session {
     this.view = new PageView(this, document.documentElement);
     this.adapter = new BrowserAdapter(this);
     this.pageObserver = new PageObserver(this);
+    this.cacheObserver = new CacheObserver;
     this.linkClickObserver = new LinkClickObserver(this);
     this.formSubmitObserver = new FormSubmitObserver(this);
     this.scrollObserver = new ScrollObserver(this);
@@ -2304,6 +2362,7 @@ class Session {
   start() {
     if (!this.started) {
       this.pageObserver.start();
+      this.cacheObserver.start();
       this.linkClickObserver.start();
       this.formSubmitObserver.start();
       this.scrollObserver.start();
@@ -2320,6 +2379,7 @@ class Session {
   stop() {
     if (this.started) {
       this.pageObserver.stop();
+      this.cacheObserver.stop();
       this.linkClickObserver.stop();
       this.formSubmitObserver.stop();
       this.scrollObserver.stop();
@@ -2356,9 +2416,9 @@ class Session {
   get restorationIdentifier() {
     return this.history.restorationIdentifier;
   }
-  historyPoppedToLocationWithRestorationIdentifier(location) {
+  historyPoppedToLocationWithRestorationIdentifier(location, restorationIdentifier) {
     if (this.enabled) {
-      this.navigator.proposeVisit(location, {
+      this.navigator.startVisit(location, restorationIdentifier, {
         action: "restore",
         historyChanged: true
       });
@@ -2734,13 +2794,14 @@ class FrameController {
   set sourceURL(sourceURL) {
     this.settingSourceURL = true;
     this.element.src = sourceURL !== null && sourceURL !== void 0 ? sourceURL : null;
+    this.currentURL = this.element.src;
     this.settingSourceURL = false;
   }
   get loadingStyle() {
     return this.element.loading;
   }
   get isLoading() {
-    return this.formSubmission !== undefined || this.resolveVisitPromise !== undefined;
+    return this.formSubmission !== undefined || this.resolveVisitPromise() !== undefined;
   }
   get isActive() {
     return this.element.isActive && this.connected;
@@ -2773,27 +2834,37 @@ function activateElement(element, currentURL) {
 }
 
 const StreamActions = {
+  after() {
+    this.targetElements.forEach((e => {
+      var _a;
+      return (_a = e.parentElement) === null || _a === void 0 ? void 0 : _a.insertBefore(this.templateContent, e.nextSibling);
+    }));
+  },
   append() {
-    var _a;
-    (_a = this.targetElement) === null || _a === void 0 ? void 0 : _a.append(this.templateContent);
+    this.removeDuplicateTargetChildren();
+    this.targetElements.forEach((e => e.append(this.templateContent)));
+  },
+  before() {
+    this.targetElements.forEach((e => {
+      var _a;
+      return (_a = e.parentElement) === null || _a === void 0 ? void 0 : _a.insertBefore(this.templateContent, e);
+    }));
   },
   prepend() {
-    var _a;
-    (_a = this.targetElement) === null || _a === void 0 ? void 0 : _a.prepend(this.templateContent);
+    this.removeDuplicateTargetChildren();
+    this.targetElements.forEach((e => e.prepend(this.templateContent)));
   },
   remove() {
-    var _a;
-    (_a = this.targetElement) === null || _a === void 0 ? void 0 : _a.remove();
+    this.targetElements.forEach((e => e.remove()));
   },
   replace() {
-    var _a;
-    (_a = this.targetElement) === null || _a === void 0 ? void 0 : _a.replaceWith(this.templateContent);
+    this.targetElements.forEach((e => e.replaceWith(this.templateContent)));
   },
   update() {
-    if (this.targetElement) {
-      this.targetElement.innerHTML = "";
-      this.targetElement.append(this.templateContent);
-    }
+    this.targetElements.forEach((e => {
+      e.innerHTML = "";
+      e.append(this.templateContent);
+    }));
   }
 };
 
@@ -2821,6 +2892,15 @@ class StreamElement extends HTMLElement {
       this.remove();
     } catch (_a) {}
   }
+  removeDuplicateTargetChildren() {
+    this.duplicateChildren.forEach((c => c.remove()));
+  }
+  get duplicateChildren() {
+    var _a;
+    const existingChildren = this.targetElements.flatMap((e => [ ...e.children ])).filter((c => !!c.id));
+    const newChildrenIds = [ ...(_a = this.templateContent) === null || _a === void 0 ? void 0 : _a.children ].filter((c => !!c.id)).map((c => c.id));
+    return existingChildren.filter((c => newChildrenIds.includes(c.id)));
+  }
   get performAction() {
     if (this.action) {
       const actionFunction = StreamActions[this.action];
@@ -2831,15 +2911,17 @@ class StreamElement extends HTMLElement {
     }
     this.raise("action attribute is missing");
   }
-  get targetElement() {
-    var _a;
+  get targetElements() {
     if (this.target) {
-      return (_a = this.ownerDocument) === null || _a === void 0 ? void 0 : _a.getElementById(this.target);
+      return this.targetElementsById;
+    } else if (this.targets) {
+      return this.targetElementsByQuery;
+    } else {
+      this.raise("target or targets attribute is missing");
     }
-    this.raise("target attribute is missing");
   }
   get templateContent() {
-    return this.templateElement.content;
+    return this.templateElement.content.cloneNode(true);
   }
   get templateElement() {
     if (this.firstElementChild instanceof HTMLTemplateElement) {
@@ -2853,6 +2935,9 @@ class StreamElement extends HTMLElement {
   get target() {
     return this.getAttribute("target");
   }
+  get targets() {
+    return this.getAttribute("targets");
+  }
   raise(message) {
     throw new Error(`${this.description}: ${message}`);
   }
@@ -2865,6 +2950,24 @@ class StreamElement extends HTMLElement {
       bubbles: true,
       cancelable: true
     });
+  }
+  get targetElementsById() {
+    var _a;
+    const element = (_a = this.ownerDocument) === null || _a === void 0 ? void 0 : _a.getElementById(this.target);
+    if (element !== null) {
+      return [ element ];
+    } else {
+      return [];
+    }
+  }
+  get targetElementsByQuery() {
+    var _a;
+    const elements = (_a = this.ownerDocument) === null || _a === void 0 ? void 0 : _a.querySelectorAll(this.targets);
+    if (elements.length !== 0) {
+      return Array.prototype.slice.call(elements);
+    } else {
+      return [];
+    }
   }
 }
 
@@ -2885,7 +2988,7 @@ customElements.define("turbo-stream", StreamElement);
 
         Load your application’s JavaScript bundle inside the <head> element instead. <script> elements in <body> are evaluated with each page change.
 
-        For more information, see: https://turbo.hotwire.dev/handbook/building#working-with-script-elements
+        For more information, see: https://turbo.hotwired.dev/handbook/building#working-with-script-elements
 
         ——
         Suppress this warning by adding a "data-turbo-suppress-warning" attribute to: %s
@@ -2929,6 +3032,21 @@ function clearCache() {
 function setProgressBarDelay(delay) {
   session.setProgressBarDelay(delay);
 }
+
+var Turbo = Object.freeze({
+  __proto__: null,
+  navigator: navigator,
+  start: start,
+  registerAdapter: registerAdapter,
+  visit: visit,
+  connectStreamSource: connectStreamSource,
+  disconnectStreamSource: disconnectStreamSource,
+  renderStreamMessage: renderStreamMessage,
+  clearCache: clearCache,
+  setProgressBarDelay: setProgressBarDelay
+});
+
+window.Turbo = Turbo;
 
 start();
 
