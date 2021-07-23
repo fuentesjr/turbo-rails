@@ -1,5 +1,6 @@
 *.gem
 /node_modules
+.ruby-version
 
 test/rake_tasks/mounted_apps/webpacker/node_modules
 test/rake_tasks/mounted_apps/webpacker/log
