@@ -102,6 +102,8 @@ To work on this gem, you need to do the following:
   RAILS_ENV=test bundle exec rails db:create db:migrate
   ```
 * To run the Rails tests: `bundle exec rake`.
+  * To install dependencies: `bundle install`
+  * To prepare the test database: `cd test/dummy; RAILS_ENV=test ./bin/rails db:migrate`
 * To compile the JavaScript for the asset pipeline: `yarn build`
 * When you're done, push your changes back to your Github fork and create a merge request back to 
   **hotwire/turbo-rails**.
