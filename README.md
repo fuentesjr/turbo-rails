@@ -1,6 +1,6 @@
 # Turbo
 
-[Turbo](https://turbo.hotwire.dev) gives you the speed of a single-page web application without having to write any JavaScript. Turbo accelerates links and form submissions without requiring you to change your server-side generated HTML. It lets you carve up a page into independent frames, which can be lazy-loaded and operate as independent components. And finally, helps you make partial page updates using just HTML and a set of CRUD-like container tags. These three techniques reduce the amount of custom JavaScript that many web applications need to write by an order of magnitude. And for the few dynamic bits that are left, you're invited to finish the job with [Stimulus](https://github.com/hotwired/stimulus).
+[Turbo](https://turbo.hotwired.dev) gives you the speed of a single-page web application without having to write any JavaScript. Turbo accelerates links and form submissions without requiring you to change your server-side generated HTML. It lets you carve up a page into independent frames, which can be lazy-loaded and operate as independent components. And finally, helps you make partial page updates using just HTML and a set of CRUD-like container tags. These three techniques reduce the amount of custom JavaScript that many web applications need to write by an order of magnitude. And for the few dynamic bits that are left, you're invited to finish the job with [Stimulus](https://github.com/hotwired/stimulus).
 
 On top of accelerating web applications, Turbo was built from the ground-up to form the foundation of hybrid native applications. Write the navigational shell of your Android or iOS app using the standard platform tooling, then seamlessly fill in features from the web, following native navigation patterns. Not every mobile screen needs to be written in Swift or Kotlin to feel native. With Turbo, you spend less time wrangling JSON, waiting on app stores to approve updates, or reimplementing features you've already created in HTML.
 
@@ -32,6 +32,8 @@ With this Rails integration, you can create these asynchronous updates directly 
 
 ## Installation
 
+### A. Rails applications
+
 The JavaScript for Turbo can either be run through the asset pipeline, which is included with this gem, or through the package that lives on NPM, through Webpacker.
 
 1. Add the `turbo-rails` gem to your Gemfile: `gem 'turbo-rails'`
@@ -40,33 +42,71 @@ The JavaScript for Turbo can either be run through the asset pipeline, which is 
 
 Running `turbo:install` will install through NPM if Webpacker is installed in the application. Otherwise the asset pipeline version is used.
 
-If you're using Webpack and need to use either the cable consumer or the Turbo instance, you can import [`Turbo`](https://turbo.hotwire.dev/reference/drive) and/or [`cable`](https://github.com/hotwired/turbo-rails/blob/main/app/javascript/turbo/cable.js) (`import { Turbo, cable } from "@hotwired/turbo-rails"`), but ensure that your application actually *uses* the members it `import`s when using this style (see [turbo-rails#48](https://github.com/hotwired/turbo-rails/issues/48)).
+If you're using Webpack and need to use the cable consumer, you can import [`cable`](https://github.com/hotwired/turbo-rails/blob/main/app/javascript/turbo/cable.js) (`import { cable } from "@hotwired/turbo-rails"`), but ensure that your application actually *uses* the members it `import`s when using this style (see [turbo-rails#48](https://github.com/hotwired/turbo-rails/issues/48)).
 
-If you're using a [native adapter](https://turbo.hotwire.dev/handbook/native), you'll need to assign `window.Turbo`, even if it's not used for anything else:
+The `Turbo` instance is automatically assigned to `window.Turbo` upon import:
 
 ```js
-import { Turbo } from "@hotwired/turbo-rails"
-window.Turbo = Turbo
+import "@hotwired/turbo-rails"
 ```
+
+### B. Rails engines
+
+To install turbo-rails inside a Rails engine:
+
+* Add the turbo-rails gem to the engine's **.gemspec** file:
+  ```ruby
+  spec.add_dependency 'turbo-rails'
+  ```
+* If you are using a local clone of the **turbo-rails** gem, you should also add the following to your your **Gemfile** (substituting your local path):
+  ```ruby
+  gem 'turbo-rails', path: '/local/path/to/your/copy/of/turbo-rails'
+  ```
+* Run `bundle install`.  This should add the **turbo-rails** gem to your **Gemfile.lock**.
+* Finally, run this command to update your engine so that it actually uses **turbo-rails**:
+  ```shell
+  $ bundle exec rails app:turbo:install
+  ```
+* Add this line to the top of your engine's **lib/<engine_name>/engine.rb** file:
+  ```ruby
+  require "turbo-rails"
+  ```
+  You may wish to encapsulate this require in `if Rails.env.development? || Rails.env.test?`.  
+  This may prevent problems later on when you deploy your host application to staging or production.
+
 
 ## Usage
 
-You can watch [the video introduction to Hotwire](https://hotwire.dev/#screencast), which focuses extensively on demonstration Turbo in a Rails demo. Then you should familiarize yourself with [Turbo handbook](https://turbo.hotwire.dev/handbook/introduction) to understand Drive, Frames, and Streams in-depth. Finally, dive into the code documentation by starting with [`Turbo::FramesHelper`](https://github.com/hotwired/turbo-rails/blob/main/app/helpers/turbo/frames_helper.rb), [`Turbo::StreamsHelper`](https://github.com/hotwired/turbo-rails/blob/main/app/helpers/turbo/streams_helper.rb), [`Turbo::Streams::TagBuilder`](https://github.com/hotwired/turbo-rails/blob/main/app/models/turbo/streams/tag_builder.rb), and [`Turbo::Broadcastable`](https://github.com/hotwired/turbo-rails/blob/main/app/models/concerns/turbo/broadcastable.rb).
+You can watch [the video introduction to Hotwire](https://hotwired.dev/#screencast), which extensively demonstrates Turbo in a Rails demo app. 
+
+Next, you should familiarize yourself with the [Turbo handbook](https://turbo.hotwired.dev/handbook/introduction) to understand Drive, Frames, and Streams in-depth. 
+
+Finally, dive into the code documentation, starting with [`Turbo::FramesHelper`](https://github.com/hotwired/turbo-rails/blob/main/app/helpers/turbo/frames_helper.rb), [`Turbo::StreamsHelper`](https://github.com/hotwired/turbo-rails/blob/main/app/helpers/turbo/streams_helper.rb), [`Turbo::Streams::TagBuilder`](https://github.com/hotwired/turbo-rails/blob/main/app/models/turbo/streams/tag_builder.rb), and [`Turbo::Broadcastable`](https://github.com/hotwired/turbo-rails/blob/main/app/models/concerns/turbo/broadcastable.rb).
 
 
 ## Compatibility with Rails UJS
 
-Rails UJS includes helpers for sending links and forms over XMLHttpRequest, so you can respond with Ajax. Turbo supersedes this functionality, so you should ensure that you're either running Rails 6.1 with the defaults that turn this off for forms, or that you add `config.action_view.form_with_generates_remote_forms = false` to your `config/application.rb`.
-
-Note that the helpers that turn `link_to` into remote invocations will _not_ currently work with Turbo. Links that have been made remote will not stick within frames nor will they allow you to respond with turbo stream actions. The recommendation is to replace these links with styled `button_to`, so you'll flow through a regular form, and you'll be better off with a11y compliance.
-
-You can still use the `data-confirm` and `data-disable-with`.
+Turbo can coexist with Rails UJS, but you need to take a series of upgrade steps to make it happen. See [the upgrading guide](https://github.com/hotwired/turbo-rails/blob/main/UPGRADING.md).
 
 
 ## Development
 
+To work on this gem, you need to do the following:
+
+* Fork the gem from Github, and clone your fork to your local machine.
+* Load a version of Ruby higher than 2.6.
+* Install the gem's dependencies with `bundle install`.
+* Set up the dummy app's database with:
+  ```shell
+  cd test/dummy
+  RAILS_ENV=test bundle exec rails db:create db:migrate
+  ```
 * To run the Rails tests: `bundle exec rake`.
+  * To install dependencies: `bundle install`
+  * To prepare the test database: `cd test/dummy; RAILS_ENV=test ./bin/rails db:migrate`
 * To compile the JavaScript for the asset pipeline: `yarn build`
+* When you're done, push your changes back to your Github fork and create a merge request back to 
+  **hotwire/turbo-rails**.
 
 
 ## License
