@@ -98,6 +98,7 @@ To work on this gem, you need to do the following:
 * Install the gem's dependencies with `bundle install`.
 * Set up the dummy app's database with:
   ```shell
+  cd test/dummy
   RAILS_ENV=test bundle exec rails db:create db:migrate
   ```
 * To run the Rails tests: `bundle exec rake`.
