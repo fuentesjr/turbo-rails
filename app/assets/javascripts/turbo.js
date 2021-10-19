@@ -30,9 +30,17 @@ function clickCaptured(event) {
 }
 
 (function() {
-  if ("SubmitEvent" in window) return;
+  if ("submitter" in Event.prototype) return;
+  let prototype;
+  if ("SubmitEvent" in window && /Apple Computer/.test(navigator.vendor)) {
+    prototype = window.SubmitEvent.prototype;
+  } else if ("SubmitEvent" in window) {
+    return;
+  } else {
+    prototype = window.Event.prototype;
+  }
   addEventListener("click", clickCaptured, true);
-  Object.defineProperty(Event.prototype, "submitter", {
+  Object.defineProperty(prototype, "submitter", {
     get() {
       if (this.type == "submit" && this.target instanceof HTMLFormElement) {
         return submittersByForm.get(this.target);
@@ -226,11 +234,11 @@ class FetchResponse {
     return this.header("Content-Type");
   }
   get responseText() {
-    return this.response.text();
+    return this.response.clone().text();
   }
   get responseHTML() {
     if (this.isHTML) {
-      return this.response.text();
+      return this.response.clone().text();
     } else {
       return Promise.resolve(undefined);
     }
@@ -246,7 +254,11 @@ function dispatch(eventName, {target: target, cancelable: cancelable, detail: de
     bubbles: true,
     detail: detail
   });
-  void (target || document.documentElement).dispatchEvent(event);
+  if (target && target.isConnected) {
+    target.dispatchEvent(event);
+  } else {
+    document.documentElement.dispatchEvent(event);
+  }
   return event;
 }
 
@@ -326,7 +338,7 @@ function fetchMethodFromString(method) {
 }
 
 class FetchRequest {
-  constructor(delegate, method, location, body = new URLSearchParams) {
+  constructor(delegate, method, location, body = new URLSearchParams, target = null) {
     this.abortController = new AbortController;
     this.resolveRequestPromise = value => {};
     this.delegate = delegate;
@@ -338,6 +350,7 @@ class FetchRequest {
       this.body = body;
       this.url = location;
     }
+    this.target = target;
   }
   get location() {
     return this.url;
@@ -361,8 +374,10 @@ class FetchRequest {
       const response = await fetch(this.url.href, fetchOptions);
       return await this.receive(response);
     } catch (error) {
-      this.delegate.requestErrored(this, error);
-      throw error;
+      if (error.name !== "AbortError") {
+        this.delegate.requestErrored(this, error);
+        throw error;
+      }
     } finally {
       this.delegate.requestFinished(this);
     }
@@ -373,7 +388,8 @@ class FetchRequest {
       cancelable: true,
       detail: {
         fetchResponse: fetchResponse
-      }
+      },
+      target: this.target
     });
     if (event.defaultPrevented) {
       this.delegate.requestPreventedHandlingResponse(this, fetchResponse);
@@ -385,13 +401,15 @@ class FetchRequest {
     return fetchResponse;
   }
   get fetchOptions() {
+    var _a;
     return {
       method: FetchMethod[this.method].toUpperCase(),
       credentials: "same-origin",
       headers: this.headers,
       redirect: "follow",
       body: this.body,
-      signal: this.abortSignal
+      signal: this.abortSignal,
+      referrer: (_a = this.delegate.referrer) === null || _a === void 0 ? void 0 : _a.href
     };
   }
   get defaultHeaders() {
@@ -413,7 +431,8 @@ class FetchRequest {
         fetchOptions: fetchOptions,
         url: this.url.href,
         resume: this.resolveRequestPromise
-      }
+      },
+      target: this.target
     });
     if (event.defaultPrevented) await requestInterception;
   }
@@ -534,7 +553,7 @@ class FormSubmission {
     this.formElement = formElement;
     this.submitter = submitter;
     this.formData = buildFormData(formElement, submitter);
-    this.fetchRequest = new FetchRequest(this, this.method, this.location, this.body);
+    this.fetchRequest = new FetchRequest(this, this.method, this.location, this.body, this.formElement);
     this.mustRedirect = mustRedirect;
   }
   get method() {
@@ -544,7 +563,8 @@ class FormSubmission {
   }
   get action() {
     var _a;
-    return ((_a = this.submitter) === null || _a === void 0 ? void 0 : _a.getAttribute("formaction")) || this.formElement.action;
+    const formElementAction = typeof this.formElement.action === "string" ? this.formElement.action : null;
+    return ((_a = this.submitter) === null || _a === void 0 ? void 0 : _a.getAttribute("formaction")) || this.formElement.getAttribute("action") || formElementAction || "";
   }
   get location() {
     return expandURL(this.action);
@@ -691,11 +711,7 @@ class Snapshot {
     return this.getElementForAnchor(anchor) != null;
   }
   getElementForAnchor(anchor) {
-    try {
-      return this.element.querySelector(`[id='${anchor}'], a[name='${anchor}']`);
-    } catch (_a) {
-      return null;
-    }
+    return anchor ? this.element.querySelector(`[id='${anchor}'], a[name='${anchor}']`) : null;
   }
   get isConnected() {
     return this.element.isConnected;
@@ -725,8 +741,8 @@ class Snapshot {
 class FormInterceptor {
   constructor(delegate, element) {
     this.submitBubbled = event => {
-      if (event.target instanceof HTMLFormElement) {
-        const form = event.target;
+      const form = event.target;
+      if (form instanceof HTMLFormElement && form.closest("turbo-frame, html") == this.element) {
         const submitter = event.submitter || undefined;
         if (this.delegate.shouldInterceptFormSubmission(form, submitter)) {
           event.preventDefault();
@@ -784,6 +800,12 @@ class View {
   }
   scrollToPosition({x: x, y: y}) {
     this.scrollRoot.scrollTo(x, y);
+  }
+  scrollToTop() {
+    this.scrollToPosition({
+      x: 0,
+      y: 0
+    });
   }
   get scrollRoot() {
     return window;
@@ -1166,7 +1188,7 @@ ProgressBar.animationDuration = 300;
 class HeadSnapshot extends Snapshot {
   constructor() {
     super(...arguments);
-    this.detailsByOuterHTML = this.children.filter((element => !elementIsNoscript(element))).reduce(((result, element) => {
+    this.detailsByOuterHTML = this.children.filter((element => !elementIsNoscript(element))).map((element => elementWithoutNonce(element))).reduce(((result, element) => {
       const {outerHTML: outerHTML} = element;
       const details = outerHTML in result ? result[outerHTML] : {
         type: elementType(element),
@@ -1246,6 +1268,13 @@ function elementIsStylesheet(element) {
 function elementIsMetaElementWithName(element, name) {
   const tagName = element.tagName.toLowerCase();
   return tagName == "meta" && element.getAttribute("name") == name;
+}
+
+function elementWithoutNonce(element) {
+  if (element.hasAttribute("nonce")) {
+    element.setAttribute("nonce", "");
+  }
+  return element;
 }
 
 class PageSnapshot extends Snapshot {
@@ -1354,6 +1383,9 @@ class Visit {
   get restorationData() {
     return this.history.getRestorationDataForIdentifier(this.restorationIdentifier);
   }
+  get silent() {
+    return this.isSamePage;
+  }
   start() {
     if (this.state == VisitState.initialized) {
       this.recordTimingMetric(TimingMetric.visitStart);
@@ -1377,6 +1409,7 @@ class Visit {
       this.state = VisitState.completed;
       this.adapter.visitCompleted(this);
       this.delegate.visitCompleted(this);
+      this.followRedirect();
     }
   }
   fail() {
@@ -1483,8 +1516,10 @@ class Visit {
   }
   followRedirect() {
     if (this.redirectedToLocation && !this.followedRedirect) {
-      this.location = this.redirectedToLocation;
-      this.history.replace(this.redirectedToLocation, this.restorationIdentifier);
+      this.adapter.visitProposedToLocation(this.redirectedToLocation, {
+        action: "replace",
+        response: this.response
+      });
       this.followedRedirect = true;
     }
   }
@@ -1538,9 +1573,9 @@ class Visit {
   performScroll() {
     if (!this.scrolled) {
       if (this.action == "restore") {
-        this.scrollToRestoredPosition() || this.scrollToAnchor() || this.scrollToTop();
+        this.scrollToRestoredPosition() || this.scrollToAnchor() || this.view.scrollToTop();
       } else {
-        this.scrollToAnchor() || this.scrollToTop();
+        this.scrollToAnchor() || this.view.scrollToTop();
       }
       if (this.isSamePage) {
         this.delegate.visitScrolledToSamePageLocation(this.view.lastRenderedLocation, this.location);
@@ -1561,12 +1596,6 @@ class Visit {
       this.view.scrollToAnchor(anchor);
       return true;
     }
-  }
-  scrollToTop() {
-    this.view.scrollToPosition({
-      x: 0,
-      y: 0
-    });
   }
   recordTimingMetric(metric) {
     this.timingMetrics[metric] = (new Date).getTime();
@@ -1643,7 +1672,7 @@ class BrowserAdapter {
   visitRequestStarted(visit) {
     this.progressBar.setValue(0);
     if (visit.hasCachedSnapshot() || visit.action != "restore") {
-      this.showProgressBarAfterDelay();
+      this.showVisitProgressBarAfterDelay();
     } else {
       this.showProgressBar();
     }
@@ -1664,24 +1693,42 @@ class BrowserAdapter {
   }
   visitRequestFinished(visit) {
     this.progressBar.setValue(1);
-    this.hideProgressBar();
+    this.hideVisitProgressBar();
   }
-  visitCompleted(visit) {
-    visit.followRedirect();
-  }
+  visitCompleted(visit) {}
   pageInvalidated() {
     this.reload();
   }
   visitFailed(visit) {}
   visitRendered(visit) {}
-  showProgressBarAfterDelay() {
-    this.progressBarTimeout = window.setTimeout(this.showProgressBar, this.session.progressBarDelay);
+  formSubmissionStarted(formSubmission) {
+    this.progressBar.setValue(0);
+    this.showFormProgressBarAfterDelay();
   }
-  hideProgressBar() {
+  formSubmissionFinished(formSubmission) {
+    this.progressBar.setValue(1);
+    this.hideFormProgressBar();
+  }
+  showVisitProgressBarAfterDelay() {
+    this.visitProgressBarTimeout = window.setTimeout(this.showProgressBar, this.session.progressBarDelay);
+  }
+  hideVisitProgressBar() {
     this.progressBar.hide();
-    if (this.progressBarTimeout != null) {
-      window.clearTimeout(this.progressBarTimeout);
-      delete this.progressBarTimeout;
+    if (this.visitProgressBarTimeout != null) {
+      window.clearTimeout(this.visitProgressBarTimeout);
+      delete this.visitProgressBarTimeout;
+    }
+  }
+  showFormProgressBarAfterDelay() {
+    if (this.formProgressBarTimeout == null) {
+      this.formProgressBarTimeout = window.setTimeout(this.showProgressBar, this.session.progressBarDelay);
+    }
+  }
+  hideFormProgressBar() {
+    this.progressBar.hide();
+    if (this.formProgressBarTimeout != null) {
+      window.clearTimeout(this.formProgressBarTimeout);
+      delete this.formProgressBarTimeout;
     }
   }
   reload() {
@@ -1772,6 +1819,7 @@ class FrameRedirector {
   linkClickIntercepted(element, url) {
     const frame = this.findFrameElement(element);
     if (frame) {
+      frame.setAttribute("reloadable", "");
       frame.src = url;
     }
   }
@@ -1779,17 +1827,18 @@ class FrameRedirector {
     return this.shouldRedirect(element, submitter);
   }
   formSubmissionIntercepted(element, submitter) {
-    const frame = this.findFrameElement(element);
+    const frame = this.findFrameElement(element, submitter);
     if (frame) {
+      frame.removeAttribute("reloadable");
       frame.delegate.formSubmissionIntercepted(element, submitter);
     }
   }
   shouldRedirect(element, submitter) {
-    const frame = this.findFrameElement(element);
+    const frame = this.findFrameElement(element, submitter);
     return frame ? frame != element.closest("turbo-frame") : false;
   }
-  findFrameElement(element) {
-    const id = element.getAttribute("data-turbo-frame");
+  findFrameElement(element, submitter) {
+    const id = (submitter === null || submitter === void 0 ? void 0 : submitter.getAttribute("data-turbo-frame")) || element.getAttribute("data-turbo-frame");
     if (id && id != "_top") {
       const frame = this.element.querySelector(`#${id}:not([disabled])`);
       if (frame instanceof FrameElement) {
@@ -1891,7 +1940,8 @@ class LinkClickObserver {
     };
     this.clickBubbled = event => {
       if (this.clickEventIsSignificant(event)) {
-        const link = this.findLinkFromClickTarget(event.target);
+        const target = event.composedPath && event.composedPath()[0] || event.target;
+        const link = this.findLinkFromClickTarget(target);
         if (link) {
           const location = this.getLocationForLink(link);
           if (this.delegate.willFollowLinkToLocation(link, location)) {
@@ -1937,7 +1987,7 @@ class Navigator {
     this.delegate = delegate;
   }
   proposeVisit(location, options = {}) {
-    if (this.delegate.allowsVisitingLocation(location)) {
+    if (this.delegate.allowsVisitingLocationWithAction(location, options.action)) {
       this.delegate.visitProposedToLocation(location, options);
     }
   }
@@ -1978,7 +2028,11 @@ class Navigator {
   get history() {
     return this.delegate.history;
   }
-  formSubmissionStarted(formSubmission) {}
+  formSubmissionStarted(formSubmission) {
+    if (typeof this.adapter.formSubmissionStarted === "function") {
+      this.adapter.formSubmissionStarted(formSubmission);
+    }
+  }
   async formSubmissionSucceededWithResponse(formSubmission, fetchResponse) {
     if (formSubmission == this.formSubmission) {
       const responseHTML = await fetchResponse.responseHTML;
@@ -2001,14 +2055,23 @@ class Navigator {
     const responseHTML = await fetchResponse.responseHTML;
     if (responseHTML) {
       const snapshot = PageSnapshot.fromHTMLString(responseHTML);
-      await this.view.renderPage(snapshot);
+      if (fetchResponse.serverError) {
+        await this.view.renderError(snapshot);
+      } else {
+        await this.view.renderPage(snapshot);
+      }
+      this.view.scrollToTop();
       this.view.clearSnapshotCache();
     }
   }
   formSubmissionErrored(formSubmission, error) {
     console.error(error);
   }
-  formSubmissionFinished(formSubmission) {}
+  formSubmissionFinished(formSubmission) {
+    if (typeof this.adapter.formSubmissionFinished === "function") {
+      this.adapter.formSubmissionFinished(formSubmission);
+    }
+  }
   visitStarted(visit) {
     this.delegate.visitStarted(visit);
   }
@@ -2016,7 +2079,10 @@ class Navigator {
     this.delegate.visitCompleted(visit);
   }
   locationWithActionIsSamePage(location, action) {
-    return getRequestURL(location) === getRequestURL(this.view.lastRenderedLocation) && (getAnchor(location) != null || action == "restore");
+    const anchor = getAnchor(location);
+    const currentAnchor = getAnchor(this.view.lastRenderedLocation);
+    const isRestorationToTop = action === "restore" && typeof anchor === "undefined";
+    return action !== "replace" && getRequestURL(location) === getRequestURL(this.view.lastRenderedLocation) && (isRestorationToTop || anchor != null && anchor !== currentAnchor);
   }
   visitScrolledToSamePageLocation(oldURL, newURL) {
     this.delegate.visitScrolledToSamePageLocation(oldURL, newURL);
@@ -2408,6 +2474,7 @@ class Session {
     this.scrollObserver = new ScrollObserver(this);
     this.streamObserver = new StreamObserver(this);
     this.frameRedirector = new FrameRedirector(document.documentElement);
+    this.drive = true;
     this.enabled = true;
     this.progressBarDelay = 500;
     this.started = false;
@@ -2485,7 +2552,7 @@ class Session {
     });
   }
   willFollowLinkToLocation(link, location) {
-    return elementIsNavigable(link) && this.locationIsVisitable(location) && this.applicationAllowsFollowingLinkToLocation(link, location);
+    return this.elementDriveEnabled(link) && this.locationIsVisitable(location) && this.applicationAllowsFollowingLinkToLocation(link, location);
   }
   followedLinkToLocation(link, location) {
     const action = this.getActionForLink(link);
@@ -2500,6 +2567,7 @@ class Session {
       const form = document.createElement("form");
       form.method = linkMethod;
       form.action = link.getAttribute("href") || "undefined";
+      form.hidden = true;
       (_a = link.parentNode) === null || _a === void 0 ? void 0 : _a.insertBefore(form, link);
       return dispatch("submit", {
         cancelable: true,
@@ -2509,8 +2577,8 @@ class Session {
       return false;
     }
   }
-  allowsVisitingLocation(location) {
-    return this.applicationAllowsVisitingLocation(location);
+  allowsVisitingLocationWithAction(location, action) {
+    return this.locationWithActionIsSamePage(location, action) || this.applicationAllowsVisitingLocation(location);
   }
   visitProposedToLocation(location, options) {
     extendURLWithDeprecatedProperties(location);
@@ -2518,7 +2586,9 @@ class Session {
   }
   visitStarted(visit) {
     extendURLWithDeprecatedProperties(visit.location);
-    this.notifyApplicationAfterVisitingLocation(visit.location, visit.action);
+    if (!visit.silent) {
+      this.notifyApplicationAfterVisitingLocation(visit.location, visit.action);
+    }
   }
   visitCompleted(visit) {
     this.notifyApplicationAfterPageLoad(visit.getTimingMetrics());
@@ -2530,7 +2600,7 @@ class Session {
     this.notifyApplicationAfterVisitingSamePageLocation(oldURL, newURL);
   }
   willSubmitForm(form, submitter) {
-    return elementIsNavigable(form) && elementIsNavigable(submitter);
+    return this.elementDriveEnabled(form) && (!submitter || this.elementDriveEnabled(submitter));
   }
   formSubmitted(form, submitter) {
     this.navigator.submitForm(form, submitter);
@@ -2549,7 +2619,10 @@ class Session {
     this.renderStreamMessage(message);
   }
   viewWillCacheSnapshot() {
-    this.notifyApplicationBeforeCachingSnapshot();
+    var _a;
+    if (!((_a = this.navigator.currentVisit) === null || _a === void 0 ? void 0 : _a.silent)) {
+      this.notifyApplicationBeforeCachingSnapshot();
+    }
   }
   allowsImmediateRender({element: element}, resume) {
     const event = this.notifyApplicationBeforeRender(element, resume);
@@ -2561,6 +2634,12 @@ class Session {
   }
   viewInvalidated() {
     this.adapter.pageInvalidated();
+  }
+  frameLoaded(frame) {
+    this.notifyApplicationAfterFrameLoad(frame);
+  }
+  frameRendered(fetchResponse, frame) {
+    this.notifyApplicationAfterFrameRender(fetchResponse, frame);
   }
   applicationAllowsFollowingLinkToLocation(link, location) {
     const event = this.notifyApplicationAfterClickingLinkToLocation(link, location);
@@ -2624,6 +2703,36 @@ class Session {
       newURL: newURL.toString()
     }));
   }
+  notifyApplicationAfterFrameLoad(frame) {
+    return dispatch("turbo:frame-load", {
+      target: frame
+    });
+  }
+  notifyApplicationAfterFrameRender(fetchResponse, frame) {
+    return dispatch("turbo:frame-render", {
+      detail: {
+        fetchResponse: fetchResponse
+      },
+      target: frame,
+      cancelable: true
+    });
+  }
+  elementDriveEnabled(element) {
+    const container = element === null || element === void 0 ? void 0 : element.closest("[data-turbo]");
+    if (this.drive) {
+      if (container) {
+        return container.getAttribute("data-turbo") != "false";
+      } else {
+        return true;
+      }
+    } else {
+      if (container) {
+        return container.getAttribute("data-turbo") == "true";
+      } else {
+        return false;
+      }
+    }
+  }
   getActionForLink(link) {
     const action = link.getAttribute("data-turbo-action");
     return isAction(action) ? action : "advance";
@@ -2633,15 +2742,6 @@ class Session {
   }
   get snapshot() {
     return this.view.snapshot;
-  }
-}
-
-function elementIsNavigable(element) {
-  const container = element === null || element === void 0 ? void 0 : element.closest("[data-turbo]");
-  if (container) {
-    return container.getAttribute("data-turbo") != "false";
-  } else {
-    return true;
   }
 }
 
@@ -2656,6 +2756,58 @@ const deprecatedLocationPropertyDescriptors = {
     }
   }
 };
+
+const session = new Session;
+
+const {navigator: navigator$1} = session;
+
+function start() {
+  session.start();
+}
+
+function registerAdapter(adapter) {
+  session.registerAdapter(adapter);
+}
+
+function visit(location, options) {
+  session.visit(location, options);
+}
+
+function connectStreamSource(source) {
+  session.connectStreamSource(source);
+}
+
+function disconnectStreamSource(source) {
+  session.disconnectStreamSource(source);
+}
+
+function renderStreamMessage(message) {
+  session.renderStreamMessage(message);
+}
+
+function clearCache() {
+  session.clearCache();
+}
+
+function setProgressBarDelay(delay) {
+  session.setProgressBarDelay(delay);
+}
+
+var Turbo = Object.freeze({
+  __proto__: null,
+  navigator: navigator$1,
+  session: session,
+  PageRenderer: PageRenderer,
+  PageSnapshot: PageSnapshot,
+  start: start,
+  registerAdapter: registerAdapter,
+  visit: visit,
+  connectStreamSource: connectStreamSource,
+  disconnectStreamSource: disconnectStreamSource,
+  renderStreamMessage: renderStreamMessage,
+  clearCache: clearCache,
+  setProgressBarDelay: setProgressBarDelay
+});
 
 class FrameController {
   constructor(element) {
@@ -2672,6 +2824,7 @@ class FrameController {
   connect() {
     if (!this.connected) {
       this.connected = true;
+      this.reloadable = false;
       if (this.loadingStyle == FrameLoadingStyle.lazy) {
         this.appearanceObserver.start();
       }
@@ -2707,7 +2860,7 @@ class FrameController {
     }
   }
   async loadSourceURL() {
-    if (!this.settingSourceURL && this.enabled && this.isActive && this.sourceURL != this.currentURL) {
+    if (!this.settingSourceURL && this.enabled && this.isActive && (this.reloadable || this.sourceURL != this.currentURL)) {
       const previousURL = this.currentURL;
       this.currentURL = this.sourceURL;
       if (this.sourceURL) {
@@ -2716,6 +2869,7 @@ class FrameController {
           this.appearanceObserver.stop();
           await this.element.loaded;
           this.hasBeenLoaded = true;
+          session.frameLoaded(this.element);
         } catch (error) {
           this.currentURL = previousURL;
           throw error;
@@ -2735,6 +2889,7 @@ class FrameController {
         const renderer = new FrameRenderer(this.view.snapshot, snapshot, false);
         if (this.view.renderPromise) await this.view.renderPromise;
         await this.view.render(renderer);
+        session.frameRendered(fetchResponse, this.element);
       }
     } catch (error) {
       console.error(error);
@@ -2752,6 +2907,7 @@ class FrameController {
     }
   }
   linkClickIntercepted(element, url) {
+    this.reloadable = true;
     this.navigateFrame(element, url);
   }
   shouldInterceptFormSubmission(element, submitter) {
@@ -2761,9 +2917,10 @@ class FrameController {
     if (this.formSubmission) {
       this.formSubmission.stop();
     }
+    this.reloadable = false;
     this.formSubmission = new FormSubmission(this, element, submitter);
     if (this.formSubmission.fetchRequest.isIdempotent) {
-      this.navigateFrame(element, this.formSubmission.fetchRequest.url.href);
+      this.navigateFrame(element, this.formSubmission.fetchRequest.url.href, submitter);
     } else {
       const {fetchRequest: fetchRequest} = this.formSubmission;
       this.prepareHeadersForRequest(fetchRequest.headers, fetchRequest);
@@ -2799,7 +2956,7 @@ class FrameController {
     frame.setAttribute("busy", "");
   }
   formSubmissionSucceededWithResponse(formSubmission, response) {
-    const frame = this.findFrameElement(formSubmission.formElement);
+    const frame = this.findFrameElement(formSubmission.formElement, formSubmission.submitter);
     frame.delegate.loadResponse(response);
   }
   formSubmissionFailedWithResponse(formSubmission, fetchResponse) {
@@ -2818,7 +2975,7 @@ class FrameController {
   viewRenderedSnapshot(snapshot, isPreview) {}
   viewInvalidated() {}
   async visit(url) {
-    const request = new FetchRequest(this, FetchMethod.get, expandURL(url));
+    const request = new FetchRequest(this, FetchMethod.get, expandURL(url), undefined, this.element);
     return new Promise((resolve => {
       this.resolveVisitPromise = () => {
         this.resolveVisitPromise = () => {};
@@ -2827,13 +2984,14 @@ class FrameController {
       request.perform();
     }));
   }
-  navigateFrame(element, url) {
-    const frame = this.findFrameElement(element);
+  navigateFrame(element, url, submitter) {
+    const frame = this.findFrameElement(element, submitter);
+    frame.setAttribute("reloadable", "");
     frame.src = url;
   }
-  findFrameElement(element) {
+  findFrameElement(element, submitter) {
     var _a;
-    const id = element.getAttribute("data-turbo-frame") || this.element.getAttribute("target");
+    const id = (submitter === null || submitter === void 0 ? void 0 : submitter.getAttribute("data-turbo-frame")) || element.getAttribute("data-turbo-frame") || this.element.getAttribute("target");
     return (_a = getFrameElementById(id)) !== null && _a !== void 0 ? _a : this.element;
   }
   async extractForeignFrameElement(container) {
@@ -2854,7 +3012,7 @@ class FrameController {
     return new FrameElement;
   }
   shouldInterceptNavigation(element, submitter) {
-    const id = element.getAttribute("data-turbo-frame") || this.element.getAttribute("target");
+    const id = (submitter === null || submitter === void 0 ? void 0 : submitter.getAttribute("data-turbo-frame")) || element.getAttribute("data-turbo-frame") || this.element.getAttribute("target");
     if (!this.enabled || id == "_top") {
       return false;
     }
@@ -2864,10 +3022,10 @@ class FrameController {
         return !frameElement.disabled;
       }
     }
-    if (!elementIsNavigable(element)) {
+    if (!session.elementDriveEnabled(element)) {
       return false;
     }
-    if (submitter && !elementIsNavigable(submitter)) {
+    if (submitter && !session.elementDriveEnabled(submitter)) {
       return false;
     }
     return true;
@@ -2881,6 +3039,18 @@ class FrameController {
   get sourceURL() {
     if (this.element.src) {
       return this.element.src;
+    }
+  }
+  get reloadable() {
+    const frame = this.findFrameElement(this.element);
+    return frame.hasAttribute("reloadable");
+  }
+  set reloadable(value) {
+    const frame = this.findFrameElement(this.element);
+    if (value) {
+      frame.setAttribute("reloadable", "");
+    } else {
+      frame.removeAttribute("reloadable");
     }
   }
   set sourceURL(sourceURL) {
@@ -3089,57 +3259,6 @@ customElements.define("turbo-stream", StreamElement);
   }
 })();
 
-const session = new Session;
-
-const {navigator: navigator} = session;
-
-function start() {
-  session.start();
-}
-
-function registerAdapter(adapter) {
-  session.registerAdapter(adapter);
-}
-
-function visit(location, options) {
-  session.visit(location, options);
-}
-
-function connectStreamSource(source) {
-  session.connectStreamSource(source);
-}
-
-function disconnectStreamSource(source) {
-  session.disconnectStreamSource(source);
-}
-
-function renderStreamMessage(message) {
-  session.renderStreamMessage(message);
-}
-
-function clearCache() {
-  session.clearCache();
-}
-
-function setProgressBarDelay(delay) {
-  session.setProgressBarDelay(delay);
-}
-
-var Turbo = Object.freeze({
-  __proto__: null,
-  navigator: navigator,
-  PageRenderer: PageRenderer,
-  PageSnapshot: PageSnapshot,
-  start: start,
-  registerAdapter: registerAdapter,
-  visit: visit,
-  connectStreamSource: connectStreamSource,
-  disconnectStreamSource: disconnectStreamSource,
-  renderStreamMessage: renderStreamMessage,
-  clearCache: clearCache,
-  setProgressBarDelay: setProgressBarDelay
-});
-
 window.Turbo = Turbo;
 
 start();
@@ -3151,9 +3270,10 @@ var turbo_es2017Esm = Object.freeze({
   clearCache: clearCache,
   connectStreamSource: connectStreamSource,
   disconnectStreamSource: disconnectStreamSource,
-  navigator: navigator,
+  navigator: navigator$1,
   registerAdapter: registerAdapter,
   renderStreamMessage: renderStreamMessage,
+  session: session,
   setProgressBarDelay: setProgressBarDelay,
   start: start,
   visit: visit

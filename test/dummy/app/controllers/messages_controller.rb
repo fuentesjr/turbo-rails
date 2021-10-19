@@ -1,6 +1,10 @@
 class MessagesController < ApplicationController
   def show
-    @message = Message.new(record_id: 1, content: "My message")
+    @message = Message.new(id: 1, content: "My message")
+  end
+
+  def index
+    @messages = Message.all
   end
 
   def create
@@ -11,6 +15,6 @@ class MessagesController < ApplicationController
   end
 
   def update
-    @message = Message.new(record_id: 1, content: "My message")
+    @message = Message.new(id: 1, content: "My message")
   end
 end

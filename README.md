@@ -15,6 +15,15 @@ During rendering, Turbo replaces the current `<body>` element outright and merge
 
 Whereas Turbolinks previously just dealt with links, Turbo can now also process form submissions and responses. This means the entire flow in the web application is wrapped into Turbo, making all the parts fast. No more need for `data-remote=true`.
 
+Turbo Drive can be disabled on a per-element basis by annotating the element or any of its ancestors with `data-turbo="false"`. If you want Turbo Drive to be disabled by default, then you can adjust your import like this:
+
+```js
+import { Turbo } from "@hotwired/turbo-rails"
+Turbo.session.drive = false
+```
+
+Then you can use `data-turbo="true"` to enable Drive on a per-element basis.
+
 
 ## Turbo Frames
 
@@ -39,10 +48,11 @@ The JavaScript for Turbo can either be run through the asset pipeline, which is 
 1. Add the `turbo-rails` gem to your Gemfile: `gem 'turbo-rails'`
 2. Run `./bin/bundle install`
 3. Run `./bin/rails turbo:install`
+4. Run `./bin/rails turbo:install:redis` to change the development Action Cable adapter from Async (the default one) to Redis. The Async adapter does not support Turbo Stream broadcasting.
 
-Running `turbo:install` will install through NPM if Webpacker is installed in the application. Otherwise the asset pipeline version is used.
+Running `turbo:install` will install through NPM if Webpacker is installed in the application. Otherwise the asset pipeline version is used. To use the asset pipeline version, you must have `importmap-rails` installed first and listed higher in the Gemfile.
 
-If you're using Webpack and need to use the cable consumer, you can import [`cable`](https://github.com/hotwired/turbo-rails/blob/main/app/javascript/turbo/cable.js) (`import { cable } from "@hotwired/turbo-rails"`), but ensure that your application actually *uses* the members it `import`s when using this style (see [turbo-rails#48](https://github.com/hotwired/turbo-rails/issues/48)).
+If you're using node and need to use the cable consumer, you can import [`cable`](https://github.com/hotwired/turbo-rails/blob/main/app/javascript/turbo/cable.js) (`import { cable } from "@hotwired/turbo-rails"`), but ensure that your application actually *uses* the members it `import`s when using this style (see [turbo-rails#48](https://github.com/hotwired/turbo-rails/issues/48)).
 
 The `Turbo` instance is automatically assigned to `window.Turbo` upon import:
 
@@ -102,6 +112,7 @@ To work on this gem, you need to do the following:
   RAILS_ENV=test bundle exec rails db:create db:migrate
   ```
 * To run the Rails tests: `bundle exec rake`.
+* FIXME: To run the Rails tests: `./bin/test`.
   * To install dependencies: `bundle install`
   * To prepare the test database: `cd test/dummy; RAILS_ENV=test ./bin/rails db:migrate`
 * To compile the JavaScript for the asset pipeline: `yarn build`
